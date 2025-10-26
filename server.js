@@ -34,8 +34,8 @@ app.use('/api/conversations', convRoutes);
 app.use('/api/chat', chatRoutes);
 const githubRoutes = require("./routes/githubRoutes");
 app.use("/api/github", githubRoutes);
-const netlifyRoutes = require("./routes/netlifyRoutes");
-app.use("/api/netlify", netlifyRoutes);
+const vercelRoutes = require("./routes/vercelRoutes");
+app.use("/api/vercel", vercelRoutes);
 app.get('/', (req, res) => {
   res.json({ ok: true, name: 'Galuxium Backend' });
 });

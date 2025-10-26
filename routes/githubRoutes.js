@@ -1,68 +1,72 @@
 const express = require("express");
-const router = express.Router();
 const axios = require("axios");
-const supabase = require("../services/supabase");
-let userAccessToken = null; // For now, global token storage. Later per-user
+const { supabase } = require("../utils/supabase");
+require("dotenv").config();
 
-const CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
-const BACKEND_URL = process.env.BACKEND_URL;
-const FRONTEND_URL = process.env.FRONTEND_URL;
-// GitHub OAuth login URL
+const router = express.Router();
+
+// Step 1: Redirect user to GitHub OAuth
 router.get("/login", (req, res) => {
-  const redirect_uri = `${BACKEND_URL}/api/github/callback`;
+  const client_id = process.env.GITHUB_CLIENT_ID;
+  const redirect_uri = `${process.env.BACKEND_URL}/api/github/callback`;
+  const scope = "repo"; // repo scope to push repos
   res.redirect(
-    `https://github.com/login/oauth/authorize?client_id=${CLIENT_ID}&redirect_uri=${redirect_uri}&scope=repo`
+    `https://github.com/login/oauth/authorize?client_id=${client_id}&redirect_uri=${redirect_uri}&scope=${scope}`
   );
 });
 
-// GitHub OAuth callback
+// Step 2: OAuth callback
 router.get("/callback", async (req, res) => {
   const code = req.query.code;
+  if (!code) return res.status(400).send("Missing code");
 
   try {
+    // Exchange code for access token
     const tokenRes = await axios.post(
-      "https://github.com/login/oauth/access_token",
+      `https://github.com/login/oauth/access_token`,
       {
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        code: code,
+        client_id: process.env.GITHUB_CLIENT_ID,
+        client_secret: process.env.GITHUB_CLIENT_SECRET,
+        code,
       },
       { headers: { Accept: "application/json" } }
     );
 
-    userAccessToken = tokenRes.data.access_token;
+    const access_token = tokenRes.data.access_token;
+    if (!access_token) return res.status(400).send("Failed to get access token");
 
-    res.cookie("github_connected", true, { httpOnly: false });
-    res.redirect(`${FRONTEND_URL}/mvps`); // your frontend redirect
-  } catch (error) {
-    console.error(error);
+    // Store token in session or database associated with your user
+    // Example: req.session.github_token = access_token
+    // For simplicity, we redirect to frontend and store in localStorage via query param
+    res.redirect(`${process.env.FRONTEND_URL}/github-connected?token=${access_token}`);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
     res.status(500).send("GitHub OAuth failed");
   }
 });
 
-// Check if GitHub connected
-router.get("/token", (req, res) => {
-  res.json({ connected: userAccessToken !== null });
-});
-
-// Create Repo & Push Files
-router.post("/push", async (req, res) => {
-  if (!userAccessToken) return res.status(403).json({ error: "GitHub not connected" });
-
-  const { repoName, description, files, mvpId } = req.body;
-
+// Step 3: Push files to GitHub
+router.put("/push", async (req, res) => {
   try {
-    // 1. Create repo
-    const repoRes = await axios.post(
+    const { repoName, files ,mvpId} = req.body;
+    const githubToken = process.env.GITHUB_TOKEN
+    if (!repoName || !files || !githubToken)
+      return res.status(400).json({ error: "Missing parameters" });
+
+    // Get authenticated user
+    const userRes = await axios.get("https://api.github.com/user", {
+      headers: { Authorization: `token ${githubToken}` },
+    });
+    const username = userRes.data.login;
+
+    // Create repo
+    await axios.post(
       "https://api.github.com/user/repos",
-      { name: repoName, description },
-      { headers: { Authorization: `token ${userAccessToken}` } }
+      { name: repoName, private: false },
+      { headers: { Authorization: `token ${githubToken}` } }
     );
 
-    const username = repoRes.data.owner.login;
-
-    // 2. Upload each file
+    // Push files
     for (const file of files) {
       await axios.put(
         `https://api.github.com/repos/${username}/${repoName}/contents/${file.path}`,
@@ -70,17 +74,22 @@ router.post("/push", async (req, res) => {
           message: `Add ${file.path}`,
           content: Buffer.from(file.content).toString("base64"),
         },
-        { headers: { Authorization: `token ${userAccessToken}` } }
+        { headers: { Authorization: `token ${githubToken}` } }
       );
     }
-   const { error } = await supabase
-      .from('mvps')
-      .update({ github_pushed: true })
-      .eq('id', mvpId);
-    res.json({ success: true });
+      // 🔹 Update Supabase record
+    if (mvpId) {
+      const { error } = await supabase
+        .from("mvps")
+        .update({ githubPushed: true }) // ✅ correct syntax
+        .eq("id", mvpId);
+
+      if (error) console.error("Supabase update error:", error.message);
+    }
+    res.json({ success: true, repoUrl: `https://github.com/${username}/${repoName}` });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to push files to GitHub" });
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ error: "GitHub push failed" });
   }
 });
 

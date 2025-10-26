@@ -1,0 +1,45 @@
+perl
+{
+  "name": "my-saas-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "format": "prettier --write .",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^1.0.1",
+    "@emotion/react": "^11.7.1",
+    "@emotion/styled": "^11.6.0",
+    "@next/font": "^12.0.0",
+    "@stripe/react-stripe-js": "^1.9.0",
+    "@stripe/stripe-js": "^1.29.0",
+    "framer-motion": "^4.1.17",
+    "next": "^12.0.0",
+    "next-auth": "^4.0.0-beta.11",
+    "next-images": "^1.8.4",
+    "prisma": "^3.9.1",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-hook-form": "^7.21.4",
+    "react-icons": "^4.3.1",
+    "stripe": "^8.149.0",
+    "tailwindcss": "^3.0.23",
+    "typescript": "^4.4.4"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.13",
+    "@types/react": "^17.0.11",
+    "@types/react-dom": "^17.0.9",
+    "autoprefixer": "^10.4.2",
+    "eslint": "^8.10.0",
+    "eslint-config-next": "^12.0.0",
+    "eslint-config-prettier": "^8.3.0",
+    "prettier": "^2.5.1"
+  }
+}
