@@ -4,24 +4,71 @@ const { supabase } = require("../utils/supabase");
 require("dotenv").config();
 
 const router = express.Router();
+const GITHUB_API_BASE = "https://api.github.com";
 
-// Step 1: Redirect user to GitHub OAuth
+
+/** 🔹 Validate GitHub token */
+async function validateToken(token) {
+  try {
+    const res = await axios.get(`${GITHUB_API_BASE}/user`, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+    });
+    return { valid: true, user: res.data };
+  } catch (err) {
+    const status = err.response?.status;
+    if (status === 401) return { valid: false, error: "Invalid or expired token" };
+    return { valid: false, error: err.message };
+  }
+}
+
+/** 🔹 Check if repo exists */
+async function repoExists(token, username, repo) {
+  try {
+    const res = await axios.get(`${GITHUB_API_BASE}/repos/${username}/${repo}`, {
+      headers: { Authorization: `token ${token}` },
+    });
+    return res.status === 200;
+  } catch (err) {
+    return err.response?.status !== 404;
+  }
+}
+
+/** 🔹 Create a new repo */
+async function createRepo(token, repoName, description = "", isPrivate = false) {
+  const res = await axios.post(
+    `${GITHUB_API_BASE}/user/repos`,
+    {
+      name: repoName,
+      description,
+      private: isPrivate,
+      has_issues: true,
+      has_projects: true,
+      has_wiki: false,
+    },
+    { headers: { Authorization: `token ${token}` } }
+  );
+  return res.data;
+}
+
+/** ---- GitHub OAuth Login ---- */
 router.get("/login", (req, res) => {
   const client_id = process.env.GITHUB_CLIENT_ID;
   const redirect_uri = `${process.env.BACKEND_URL}/api/github/callback`;
-  const scope = "repo"; // repo scope to push repos
+  const scope = "repo";
   res.redirect(
     `https://github.com/login/oauth/authorize?client_id=${client_id}&redirect_uri=${redirect_uri}&scope=${scope}`
   );
 });
 
-// Step 2: OAuth callback
+/** ---- GitHub OAuth Callback ---- */
 router.get("/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing code");
 
   try {
-    // Exchange code for access token
     const tokenRes = await axios.post(
       `https://github.com/login/oauth/access_token`,
       {
@@ -35,61 +82,96 @@ router.get("/callback", async (req, res) => {
     const access_token = tokenRes.data.access_token;
     if (!access_token) return res.status(400).send("Failed to get access token");
 
-    // Store token in session or database associated with your user
-    // Example: req.session.github_token = access_token
-    // For simplicity, we redirect to frontend and store in localStorage via query param
     res.redirect(`${process.env.FRONTEND_URL}/github-connected?token=${access_token}`);
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("OAuth failed:", err.message);
     res.status(500).send("GitHub OAuth failed");
   }
 });
 
-// Step 3: Push files to GitHub
+/** ---- Push project files automatically ---- */
 router.put("/push", async (req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Transfer-Encoding", "chunked");
+  res.flushHeaders();
+
   try {
-    const { repoName, files ,mvpId} = req.body;
-    const githubToken = process.env.GITHUB_TOKEN
-    if (!repoName || !files || !githubToken)
-      return res.status(400).json({ error: "Missing parameters" });
+    const { files, mvpId,githubToken } = req.body;
 
-    // Get authenticated user
-    const userRes = await axios.get("https://api.github.com/user", {
-      headers: { Authorization: `token ${githubToken}` },
-    });
-    const username = userRes.data.login;
+    if (!files || !mvpId || !githubToken) {
+      console.log("❌ Missing files, mvpId or GitHub token", "error");
+      return res.end();
+    }
 
-    // Create repo
-    await axios.post(
-      "https://api.github.com/user/repos",
-      { name: repoName, private: false },
-      { headers: { Authorization: `token ${githubToken}` } }
-    );
+    console.log("🔍 Fetching project details from Supabase...");
+    const { data: mvpData, error: mvpError } = await supabase
+      .from("mvps")
+      .select("name")
+      .eq("id", mvpId)
+      .single();
 
-    // Push files
-    for (const file of files) {
+    if (mvpError || !mvpData?.name) {
+      console.log("❌ Could not find project name in Supabase", "error");
+      return res.end();
+    }
+
+    const repoName = mvpData.name.toLowerCase().replace(/\s+/g, "-");
+    console.log(`📦 Project name detected → '${repoName}'`);
+
+    console.log("🔑 Validating GitHub token...");
+    const { valid, user, error } = await validateToken(githubToken);
+    if (!valid) {
+      logStream(`❌ Invalid GitHub token: ${error}`, "error");
+      return res.end();
+    }
+
+    const username = user.login;
+    console.log(`✅ Authenticated as @${username}`, "success");
+
+    console.log(`🔎 Checking if repository '${repoName}' exists...`);
+    const exists = await repoExists(githubToken, username, repoName);
+
+    if (exists) {
+      console.log(`⚠️ Repository '${repoName}' already exists. Using existing repo.`);
+    } else {
+      console.log("🚀 Creating new GitHub repository...");
+      const repo = await createRepo(githubToken, repoName, "Generated by Clovable", false);
+      console.log(`✅ Repository created: ${repo.html_url}`, "success");
+    }
+
+    console.log("📂 Uploading project files...");
+    for (const [i, file] of files.entries()) {
+      const filePath = file.path.replace(/^\//, "");
+      console.log(`→ Uploading ${filePath} (${i + 1}/${files.length})`);
       await axios.put(
-        `https://api.github.com/repos/${username}/${repoName}/contents/${file.path}`,
+        `${GITHUB_API_BASE}/repos/${username}/${repoName}/contents/${encodeURIComponent(filePath)}`,
         {
-          message: `Add ${file.path}`,
+          message: `Add ${filePath}`,
           content: Buffer.from(file.content).toString("base64"),
         },
         { headers: { Authorization: `token ${githubToken}` } }
       );
     }
-      // 🔹 Update Supabase record
-    if (mvpId) {
-      const { error } = await supabase
-        .from("mvps")
-        .update({ githubPushed: true }) // ✅ correct syntax
-        .eq("id", mvpId);
 
-      if (error) console.error("Supabase update error:", error.message);
-    }
-    res.json({ success: true, repoUrl: `https://github.com/${username}/${repoName}` });
+    console.log("✅ All files pushed successfully!", "success");
+
+    console.log("🔄 Updating Supabase record...");
+    const { error: updateError } = await supabase
+      .from("mvps")
+      .update({ githubPushed: true })
+      .eq("id", mvpId);
+
+    if (updateError)
+      console.log(`⚠️ Supabase update failed: ${updateError.message}`, "warn");
+    else
+      console.log("✅ Supabase record updated successfully", "success");
+
+    console.log(`🎉 Done! View repo → https://github.com/${username}/${repoName}`, "success");
+   
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ error: "GitHub push failed" });
+    console.error("GitHub push failed:", err.message);
+    console.log(`❌ GitHub push failed: ${err.message}`, "error");
+
   }
 });
 

@@ -10,6 +10,7 @@ const chatRoutes = require('./routes/chat')
 const app = express();
 const PORT = process.env.PORT;
 
+
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
@@ -36,6 +37,10 @@ const githubRoutes = require("./routes/githubRoutes");
 app.use("/api/github", githubRoutes);
 const vercelRoutes = require("./routes/vercelRoutes");
 app.use("/api/vercel", vercelRoutes);
+app.use("/api/ideas", require("./routes/ideaRoutes"));
+
+
+
 app.get('/', (req, res) => {
   res.json({ ok: true, name: 'Galuxium Backend' });
 });

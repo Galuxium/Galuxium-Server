@@ -1,201 +1,230 @@
+/**
+ * =====================================================
+ * File: services/codeGenerator.js
+ * Author: Galuxium Engineering
+ * Purpose: Robust, zero-error Next.js SaaS Generator
+ * =====================================================
+ */
+
+const { execSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 const axios = require("axios");
-const { OPENROUTER_API_KEY, OPENROUTER_API_URL } = require("../config");
+const {
+  OPENROUTER_API_KEY,
+  OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions",
+} = require("../config");
 
+// =====================================================
+// 🧠 System Prompt — Next.js Modifier
+// =====================================================
 const systemPrompt = `
-You are a world-class SaaS code generator.
+You are Galuxium — an AI fullstack engineer.
+You modify existing Next.js 15 apps to create beautiful, runnable MVPs using JavaScript only.
 
-Guidelines:
-- Always return clean, valid code inside triple backticks.
-- Use TypeScript with strict typing.
-- All React files must use \`.tsx\`.
-- Always define and use \`interface\`s for props and types.
-- Do not include explanations, comments, or extra text. Just return the code block.
-- For every prompt, generate a full working file.
+### Stack
+- Framework: Next.js 15 (App Router)
+- Language: JavaScript only (.js, .jsx)
+- Styling: Tailwind CSS + shadcn/ui
+- Animations: Framer Motion
+- Components: lucide-react icons
+- No TypeScript, no placeholders, no errors.
+
+### Output Rules
+- Return ONLY full file content inside one code block.
+- All imports must resolve correctly.
+- Each file must build successfully.
+- Focus on editing scaffolded files, not adding frameworks.
 `;
 
+// =====================================================
+// 🧩 Extract Code Block from AI Output
+// =====================================================
+function extractCode(content = "") {
+  const match = content.match(/```(?:jsx|js|json|md)?\n?([\s\S]*?)```/);
+  return match ? match[1].trim() : content.trim();
+}
 
-function extractCode(content) {
-  content = content.trim();
+// =====================================================
+// ⚙️ API Caller (OpenRouter or Local LLM)
+// =====================================================
+async function generateFile(taskPrompt, useLocal = false) {
+  const apiURL = useLocal
+    ? "http://localhost:1234/v1/chat/completions"
+    : OPENROUTER_API_URL;
 
-  const match = content.match(/```(?:tsx|ts|js|json)?\n?([\s\S]*?)```/);
-  if (match) {
-    let code = match[1].trim();
-    let lines = code.split("\n");
-
-    // Remove garbage first lines like "typescript", "json", "on", "file", etc.
-    while (/^(typescript|json|tsx|ts|js|on|file|code)$/i.test(lines[0]?.trim())) {
-      lines.shift();
-    }
-
-    return lines.join("\n").trim();
+  if (!useLocal && !OPENROUTER_API_KEY) {
+    throw new Error("❌ Missing OPENROUTER_API_KEY in environment variables.");
   }
 
-  if (content.length > 0) return content;
-  throw new Error("No valid code content found");
+  const headers = {
+    "Content-Type": "application/json",
+    ...(useLocal ? {} : { Authorization: `Bearer ${OPENROUTER_API_KEY}` }),
+  };
+
+  const payload = {
+    model: useLocal ? "codellama-7b-kstack" : "nvidia/nemotron-nano-9b-v2:free",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: taskPrompt },
+    ],
+    temperature: 0.35,
+    max_tokens: 4096,
+  };
+
+  try {
+    const res = await axios.post(apiURL, payload, { headers, timeout: 90000 });
+    const aiOutput = res?.data?.choices?.[0]?.message?.content;
+    if (!aiOutput) throw new Error("Empty AI response");
+    return extractCode(aiOutput);
+  } catch (err) {
+    console.error("❌ AI generation failed:", err.message);
+    throw err;
+  }
 }
 
+// =====================================================
+// 🧱 Project Bootstrap (Outside Backend)
+// =====================================================
+function createBaseNextApp(projectName) {
+  const safeName = projectName.toLowerCase().replace(/\s+/g, "-");
+  const rootDir = path.resolve(__dirname, "../../apps");
+  const projectDir = path.join(rootDir, safeName);
 
-async function generateFile(taskPrompt) {
-  const res = await axios.post(
-    OPENROUTER_API_URL,
-    {
-      model: "mistralai/mixtral-8x7b-instruct",
-      messages: [
-        { role: "system", content: systemPrompt.trim() },
-        { role: "user", content: taskPrompt },
-      ],
-      temperature: 0.4,
-      max_tokens: 4096,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  if (fs.existsSync(projectDir)) {
+    console.log(`⚠️ Directory "${safeName}" already exists, skipping scaffold.`);
+    return projectDir;
+  }
 
-  const aiOutput = res?.data?.choices?.[0]?.message?.content;
-  if (!aiOutput) throw new Error("AI response empty");
-  return extractCode(aiOutput);
+  fs.mkdirSync(rootDir, { recursive: true });
+
+  console.log(`📦 Creating base Next.js app: ${safeName}...`);
+  try {
+    execSync(
+      `npx create-next-app@latest ${safeName} --use-npm --js --app --tailwind --eslint --no-src`,
+      { stdio: "inherit", cwd: rootDir }
+    );
+    console.log(`✅ Successfully created app at ${projectDir}`);
+  } catch (err) {
+    console.error("❌ Failed to scaffold Next.js app:", err.message);
+    throw new Error("Next.js creation failed. Check Node/npm and internet connectivity.");
+  }
+
+  return projectDir;
 }
 
+// =====================================================
+// 🧩 Build Context Prompt
+// =====================================================
 function buildContextPrompt(taskPrompt, formData, ideaPrompt, projectName = "") {
   return `
 ${taskPrompt}
 
 Context:
-- Project Name: ${projectName}
-- Idea: ${formData.idea}
-- Industry: ${formData.industry}
-- Audience: ${formData.audience}
-- Features: ${formData.features.join(", ")}
-- Authentication: ${formData.auth}
-- Database: ${formData.database}
-- Design: ${formData.design}
-- Deployment: ${formData.deployment}
-- AI Model: ${formData.aiModel}
+- Project: ${projectName}
+- Idea: ${formData.idea || "N/A"}
+- Features: ${(formData.features || []).join(", ") || "None"}
+- Design: ${formData.design || "Modern"}
+- AI Model: ${formData.aiModel || "default"}
 
-Full Description:
-${ideaPrompt}
+Goal: Modify existing Next.js app files to match this vision.
 `.trim();
 }
 
+// =====================================================
+// 🧱 Task List — Files to Edit
+// =====================================================
+function createEditTaskList(formData = {}) {
+  const { features = [], projectName = "galuxium-app" } = formData;
+  const appPath = (p) => `app/${p}`;
+  const apiPath = (p) => `app/api/${p}`;
 
-// --- Dynamic task generation ---
-function createDynamicTaskList(formData) {
-  const base = [
+  const tasks = [
     {
-      file: "package.json",
-      prompt: "Generate a package.json for a full-stack SaaS app using Next.js 14 App Router, TypeScript, Tailwind CSS, Prisma ORM, PlanetScale, Clerk, Stripe, ESLint, and Prettier.",
+      file: appPath("page.jsx"),
+      prompt: `Create a landing page for ${projectName} with hero section, features grid, and CTA using Framer Motion and shadcn/ui.`,
     },
     {
-      file: "tsconfig.json",
-      prompt: "Generate a strict tsconfig.json for a modern Next.js TypeScript app.",
+      file: appPath("layout.jsx"),
+      prompt: `Add layout with Navbar and Footer styled using Tailwind and shadcn/ui.`,
     },
     {
-      file: "tailwind.config.js",
-      prompt: "Generate tailwind.config.js for Next.js with Tailwind v3 support.",
+      file: appPath("error.jsx"),
+      prompt: `Build a user-friendly error page with retry button and subtle animation.`,
     },
     {
-      file: "postcss.config.js",
-      prompt: "Generate postcss.config.js for Tailwind CSS.",
-    },
-  ];
-
-  const features = [];
-
-  if (formData.features.includes("Landing Page")) {
-    features.push({
-      file: "src/app/page.tsx",
-      prompt: "Generate a Next.js 14 App Router landing page in TypeScript using Tailwind. Include Hero, Features, Testimonials, Pricing, and CTA sections. Use interface for props.",
-    });
-  }
-
-  if (formData.features.includes("Authentication")) {
-    features.push({
-      file: "src/app/sign-in/[[...sign-in]]/page.tsx",
-      prompt: "Generate a Clerk-compatible sign-in page using useUser() and ClerkProvider. Use TypeScript and interfaces.",
-    });
-  }
-
-  if (formData.features.includes("Database CRUD")) {
-    features.push({
-      file: "src/app/projects/page.tsx",
-      prompt: "Generate a CRUD project listing page fetching user-specific projects using Prisma and Clerk. Use useUser and define types for responses.",
-    });
-  }
-
-  if (formData.features.includes("Analytics Dashboard")) {
-    features.push({
-      file: "src/app/analytics/page.tsx",
-      prompt: "Generate a dashboard page with sample charts using Chart.js. Use TypeScript and interface props.",
-    });
-  }
-
-  if (formData.features.includes("Admin Panel")) {
-    features.push({
-      file: "src/app/dashboard/page.tsx",
-      prompt: "Generate an admin dashboard with revenue, users, logs. Strict TypeScript with interfaces.",
-    });
-  }
-
-  if (formData.features.includes("Email Notifications")) {
-    features.push({
-      file: "lib/email.ts",
-      prompt: "Generate a utility file to send transactional emails using Resend or Nodemailer. Use TypeScript with strict types.",
-    });
-  }
-
-  if (formData.features.includes("Payment Integration")) {
-    features.push({
-      file: "src/app/billing/page.tsx",
-      prompt: "Generate a Stripe billing page with plan info and customer portal. Use strict TypeScript.",
-    });
-  }
-
-  if (formData.features.includes("File Upload")) {
-    features.push({
-      file: "src/app/upload/page.tsx",
-      prompt: "Generate a drag-and-drop file upload page using React Dropzone and Tailwind. Use interfaces.",
-    });
-  }
-
-  const shared = [
-    {
-      file: "src/app/layout.tsx",
-      prompt: "Generate a layout.tsx with ClerkProvider and sidebar navigation. Use interface for props.",
-    },
-    {
-      file: "src/app/settings/page.tsx",
-      prompt: "Generate a settings page for updating Clerk user profile. Use TypeScript strictly.",
-    },
-    {
-      file: "prisma/schema.prisma",
-      prompt: "Generate a Prisma schema for Users, Projects, Subscriptions with relations.",
-    },
-    {
-      file: "lib/prisma.ts",
-      prompt: "Generate a singleton PrismaClient instance setup for Next.js with strict TS.",
+      file: appPath("loading.jsx"),
+      prompt: `Add an animated loading page using Framer Motion.`,
     },
   ];
 
-  return [...base, ...features, ...shared];
+  if (features.includes("Authentication")) {
+    tasks.push({
+      file: appPath("auth/signin/page.jsx"),
+      prompt: `Add a sign-in page with email/password fields inside shadcn/ui Card. Include form validation.`,
+    });
+  }
+
+  if (features.includes("AI Assistant")) {
+    tasks.push({
+      file: appPath("ai/page.jsx"),
+      prompt: `Add an AI chat interface with message list, textarea, and animated send button.`,
+    });
+    tasks.push({
+      file: apiPath("ai/chat/route.js"),
+      prompt: `Create /api/ai/chat route handler that returns mock JSON { reply: "Hello from Galuxium AI" }.`,
+    });
+  }
+
+  return tasks;
 }
 
+// =====================================================
+// 🚀 Main Orchestrator
+// =====================================================
+async function generateSaaSCode(formData, ideaPrompt, config = {}, onProgress = null) {
+  const projectName = formData.projectName || "galuxium-app";
 
-exports.generateSaaSCode = async (formData, ideaPrompt, config = {}, onProgress = null, projectName = "") => {
+  // Create base app in /apps/
+  const projectDir = createBaseNextApp(projectName);
+  const tasks = createEditTaskList(formData);
   const generatedFiles = [];
-  const tasks = createDynamicTaskList(formData);
 
   for (const task of tasks) {
-    const contextualPrompt = buildContextPrompt(task.prompt, formData, ideaPrompt, projectName);
-    if (typeof onProgress === "function") onProgress(task.file);
+    try {
+      if (onProgress) onProgress(task.file);
+      console.log(`✏️ Generating file: ${task.file}`);
 
-    const code = await generateFile(contextualPrompt);
-    generatedFiles.push({ path: task.file, content: code });
+      const contextualPrompt = buildContextPrompt(
+        task.prompt,
+        formData,
+        ideaPrompt,
+        projectName
+      );
+
+      const code = await generateFile(contextualPrompt, config.useLocal);
+      const targetPath = path.join(projectDir, task.file);
+      const dir = path.dirname(targetPath);
+
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(targetPath, code, "utf8");
+
+      console.log(`✅ Updated ${task.file}`);
+      generatedFiles.push({ path: targetPath, content: code });
+    } catch (err) {
+      console.error(`❌ Failed to update ${task.file}:`, err.message);
+    }
   }
 
+  console.log(`🏁 All updates applied to "${projectName}" at ${projectDir}`);
   return generatedFiles;
-};
+}
 
+// =====================================================
+// 📦 Exports
+// =====================================================
+module.exports = {
+  generateSaaSCode,
+  createEditTaskList,
+  createBaseNextApp,
+};

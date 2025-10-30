@@ -4,5 +4,6 @@ const mvpController = require("../controllers/mvpController");
 
 router.get("/generate-stream", mvpController.streamGenerateMVP);
 router.get("/download/:projectName", mvpController.downloadZip);
-
+router.post("/preview", mvpController.previewMVP);
+router.get("/stop-preview", mvpController.stopPreview);
 module.exports = router;

@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createChatCompletion } = require("../utils/openrouterClient");
 const { RateLimiterMemory } = require("rate-limiter-flexible");
 const rateLimiter = new RateLimiterMemory({ points: 50, duration: 60 });
+const axios = require("axios");
 /**
  * POST /api/chat/create
  * body: { userId, title, model }
@@ -147,58 +148,185 @@ router.post("/delete", async (req, res) => {
 });
 
 
+function parseJSONSafe(raw) {
+  try {
+    if (!raw) return {};
+    if (typeof raw === "object") return raw; // already parsed
 
+    const cleaned = raw
+      .replace(/```(?:json)?/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.warn("⚠️ Could not parse classifier output:", raw);
+    return {};
+  }
+}
+
+
+
+// router.post("/search", async (req, res) => {
+//   try {
+//     const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+//     await rateLimiter.consume(ip);
+
+//     const { model, userMessages, modelProfile } = req.body;
+
+//     console.log("Searching with model:", model);
+//     if (!Array.isArray(userMessages) || userMessages.length === 0) {
+//       return res.status(400).json({ error: "userMessages array required" });
+//     }
+//     const { data: profile, error } = await supabase
+//       .from("model_profiles")
+//       .select("slug")
+//       .eq("id", model)
+//       .single();
+// console.log("Model found:", profile);
+//       if (error || !profile) {
+//       console.error("Model not found:", model);
+//       return res.status(400).json({ error: "Model not found" });
+//     }
+//     const messages = [];
+
+//     // Add system prompt if present or fallback
+//     messages.push({
+//       role: "system",
+//       content:
+//         modelProfile?.system_prompt ||
+//         "You are Galuxium — an advanced assistant that is helpful, concise, and written in a friendly Galuxium voice. You were founded by Aaditya Salgaonkar.",
+//     });
+
+//     // Append user/assistant pairs
+//     userMessages.forEach((m) => {
+//       if (m && m.role && typeof m.content === "string") {
+//         messages.push({ role: m.role, content: m.content });
+//       }
+//     });
+
+//     // Call OpenRouter (non-stream)
+//     const providerResp = await createChatCompletion({ model:profile.slug, messages, stream: false });
+
+//     return res.json({ ok: true, providerResp });
+//   } catch (err) {
+//     console.error("openrouter error", err?.response?.data || err.message);
+//     return res.status(500).json({
+//       error: "openrouter proxy failed",
+//       detail: err?.message || err,
+//     });
+//   }
+// });
 
 router.post("/search", async (req, res) => {
   try {
     const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
     await rateLimiter.consume(ip);
 
-    const { model, userMessages, modelProfile } = req.body;
-
-    console.log("Searching with model:", model);
+    const {userId, model, userMessages, modelProfile } = req.body;
     if (!Array.isArray(userMessages) || userMessages.length === 0) {
       return res.status(400).json({ error: "userMessages array required" });
     }
+    console.log("user",userId)
+    // Get model slug
     const { data: profile, error } = await supabase
       .from("model_profiles")
       .select("slug")
       .eq("id", model)
       .single();
-console.log("Model found:", profile);
-      if (error || !profile) {
+
+    if (error || !profile) {
       console.error("Model not found:", model);
       return res.status(400).json({ error: "Model not found" });
     }
-    const messages = [];
 
-    // Add system prompt if present or fallback
-    messages.push({
-      role: "system",
-      content:
-        modelProfile?.system_prompt ||
-        "You are Galuxium — an advanced assistant that is helpful, concise, and written in a friendly Galuxium voice. You were founded by Aaditya Salgaonkar.",
+    // Extract the latest user message
+    const latestMessage = userMessages[userMessages.length - 1]?.content || "";
+
+    // 🧠 STEP 1: Classify message
+    const classifierPrompt = `
+You are Galuxium's Intent Classifier.
+Detect if the message describes a startup or business idea.
+
+Return ONLY JSON:
+{
+  "is_startup_idea": boolean,
+  "idea": string,
+  "reasoning": string | null
+}`;
+
+    const classificationResp = await createChatCompletion({
+      model: "z-ai/glm-4.5-air:free",
+      messages: [
+        { role: "system", content: classifierPrompt },
+        { role: "user", content: latestMessage },
+      ],
+      stream: false,
     });
 
-    // Append user/assistant pairs
-    userMessages.forEach((m) => {
-      if (m && m.role && typeof m.content === "string") {
-        messages.push({ role: m.role, content: m.content });
+    const raw1 = classificationResp?.choices?.[0]?.message?.content || "{}";
+    const raw = parseJSONSafe(raw1)
+    console.log("🧩 Classification Result:", raw);
+
+    // 🚀 STEP 2: If startup idea → forward to /api/idea
+    if (raw?.is_startup_idea === true) {
+      console.log("🚀 Detected startup idea. Forwarding to /api/idea...");
+
+      try {
+        const ideaResp = await axios.post(
+  "http://localhost:5000/api/ideas",
+  { user_id: userId, idea: raw?.idea },
+  { headers: { "Content-Type": "application/json" } }
+);
+
+const ideaId = ideaResp.data?.id;
+
+console.log("🧭 Orchestration started for idea:", ideaId);
+
+return res.json({
+  ok: true,
+  route: "idea",
+  idea: ideaResp.data,
+  streamUrl: `http://localhost:5000/api/stream/idea/${ideaResp.data.id}`,
+});
+
+
+      } catch (forwardErr) {
+        console.error("❌ Failed to forward to /api/idea:", forwardErr.message);
+        return res.status(500).json({
+          error: "Failed to forward startup idea",
+          detail: forwardErr.message,
+        });
       }
-    });
+    }
 
-    // Call OpenRouter (non-stream)
-    const providerResp = await createChatCompletion({ model:profile.slug, messages, stream: false });
+    // 💬 STEP 3: Normal chat fallback
+    const messages = [
+      {
+        role: "system",
+        content:
+          modelProfile?.system_prompt ||
+          "You are Galuxium — an advanced assistant that is helpful, concise, and written in a friendly Galuxium voice. You were founded by Aaditya Salgaonkar.",
+      },
+      ...userMessages,
+    ];
+
+    const providerResp = await createChatCompletion({
+      model: profile.slug,
+      messages,
+      stream: false,
+    });
 
     return res.json({ ok: true, providerResp });
   } catch (err) {
-    console.error("openrouter error", err?.response?.data || err.message);
+    console.error("❌ openrouter error", err?.response?.data || err.message);
     return res.status(500).json({
       error: "openrouter proxy failed",
       detail: err?.message || err,
     });
   }
 });
+
 router.get("/models", async (req, res) => {
   try {
     const { data, error } = await supabase

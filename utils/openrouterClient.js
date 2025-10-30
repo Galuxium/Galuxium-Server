@@ -23,5 +23,25 @@ async function createChatCompletion({ model , messages, stream = false }) {
   const res = await client.post(url, payload);
   return res.data;
 }
+async function generateEmbedding(text) {
+  try {
+    console.log("🧩 [OpenRouter] Generating embedding...");
+    const response = await client.post("/embeddings", {
+      model: "gpt-4o-mini",
+      input: text,
+    });
 
-module.exports = { createChatCompletion };
+    const embedding = response.data?.data?.[0]?.embedding;
+    if (!embedding) throw new Error("No embedding returned");
+
+    console.log(`✅ [OpenRouter] Embedding generated (${embedding.length} dimensions)`);
+    return embedding;
+  } catch (err) {
+    console.error("❌ [OpenRouter] Embedding error:", err.response?.data || err.message);
+    // Return fallback zero vector to avoid pipeline crash
+    return Array(1536).fill(0);
+  }
+}
+
+
+module.exports = { createChatCompletion,generateEmbedding};
