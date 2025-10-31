@@ -13,7 +13,7 @@ const PORT = process.env.PORT;
 
 app.use(helmet());
 app.use(morgan('dev'));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const allowedOrigins = [
   "https://galuxium.com",
@@ -37,8 +37,9 @@ const githubRoutes = require("./routes/githubRoutes");
 app.use("/api/github", githubRoutes);
 const vercelRoutes = require("./routes/vercelRoutes");
 app.use("/api/vercel", vercelRoutes);
-app.use("/api/ideas", require("./routes/ideaRoutes"));
+app.use("/api/orchestrator", require("./routes/orchestrator"));
 
+app.use("/api/report",require("./routes/report_builder"));
 
 
 app.get('/', (req, res) => {
